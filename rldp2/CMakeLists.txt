@@ -33,6 +33,7 @@ set(RLDP_SOURCE
   OutboundTransfer.h
   Pacer.h
   PacketPool.h
+  PoolMonitor.h
   rldp.h
   rldp.hpp
   RldpReceiver.h

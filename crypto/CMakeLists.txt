@@ -65,6 +65,7 @@ set(TON_CRYPTO_CORE_SOURCE
   vm/cells/LevelMask.h
   vm/cells/MerkleProof.h
   vm/cells/MerkleUpdate.h
+  vm/cells/PoolMonitor.h
   vm/cells/PrunnedCell.h
   vm/cells/UsageCell.h
   vm/cells/VirtualCell.h
