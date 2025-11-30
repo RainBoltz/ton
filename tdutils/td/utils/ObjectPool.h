@@ -24,7 +24,6 @@
 #include <atomic>
 #include <memory>
 #include <utility>
-#include <vector>
 
 namespace td {
 // It is draft object pool implementaion
@@ -196,11 +195,15 @@ class ObjectPool {
   ObjectPool(ObjectPool &&other) = delete;
   ObjectPool &operator=(ObjectPool &&other) = delete;
   ~ObjectPool() {
-    // Delete all allocated chunks
-    for (auto *chunk : allocated_chunks_) {
+    // Walk the atomic chunk list and delete each chunk
+    Storage *node = chunk_list_.load(std::memory_order_relaxed);
+    while (node != nullptr) {
+      // node points to chunk[CHUNK_SIZE-1], so chunk start is (node - (CHUNK_SIZE-1))
+      Storage *chunk = node - (CHUNK_SIZE - 1);
+      Storage *next = node->next;
       delete[] chunk;
+      node = next;
     }
-    allocated_chunks_.clear();
   }
 
  private:
@@ -226,7 +229,7 @@ class ObjectPool {
   std::atomic<int32> storage_count_{0};
   std::atomic<Storage *> head_{static_cast<Storage *>(nullptr)};
   bool check_empty_flag_ = false;
-  std::vector<Storage *> allocated_chunks_;
+  std::atomic<Storage *> chunk_list_{nullptr};  // Lock-free list of allocated chunks
 
   // Performance optimization: allocate Storages in chunks to reduce allocation overhead
   static constexpr size_t CHUNK_SIZE = 64;
@@ -234,24 +237,35 @@ class ObjectPool {
   Storage *allocate_chunk() {
     // Allocate a chunk of Storage objects
     Storage *chunk = new Storage[CHUNK_SIZE];
-    allocated_chunks_.push_back(chunk);
     storage_count_.fetch_add(CHUNK_SIZE, std::memory_order_relaxed);
 
-    // Link them together (except the first one which we'll return)
+    // Link items 1 to CHUNK_SIZE-2 together for free list
+    // Item 0 is returned to caller, item CHUNK_SIZE-1 is reserved for chunk tracking
     for (size_t i = 1; i < CHUNK_SIZE - 1; i++) {
       chunk[i].next = &chunk[i + 1];
     }
-    chunk[CHUNK_SIZE - 1].next = nullptr;
+    chunk[CHUNK_SIZE - 2].next = nullptr;
 
-    // Add chunk (except first element) to the free list
-    if (CHUNK_SIZE > 1) {
+    // Add items 1 to CHUNK_SIZE-2 to the free list
+    if (CHUNK_SIZE > 2) {
       Storage *chunk_head = &chunk[1];
       while (true) {
         auto *save_head = head_.load(std::memory_order_relaxed);
-        chunk[CHUNK_SIZE - 1].next = save_head;
+        chunk[CHUNK_SIZE - 2].next = save_head;
         if (likely(head_.compare_exchange_weak(save_head, chunk_head, std::memory_order_release, std::memory_order_relaxed))) {
           break;
         }
+      }
+    }
+
+    // Track this chunk using lock-free atomic list
+    // Use chunk[CHUNK_SIZE-1] as the link node for chunk tracking
+    Storage *chunk_node = &chunk[CHUNK_SIZE - 1];
+    while (true) {
+      auto *save_head = chunk_list_.load(std::memory_order_relaxed);
+      chunk_node->next = save_head;
+      if (likely(chunk_list_.compare_exchange_weak(save_head, chunk_node, std::memory_order_release, std::memory_order_relaxed))) {
+        break;
       }
     }
 
